@@ -1,0 +1,29 @@
+zerops:
+  # NOTE: The setup name must match the service name you create in the Zerops GUI.
+  - setup: flowops
+    build:
+      base: nodejs@22
+      buildCommands:
+        # Enable corepack to reproducibly use the exact pnpm version defined in package.json
+        - corepack enable
+        - corepack prepare pnpm@11.0.9 --activate
+        # Install dependencies using the lockfile to guarantee deterministic builds
+        - pnpm install --frozen-lockfile
+        # Build the Next.js standalone application
+        - pnpm build
+        # Next.js standalone mode does not automatically include static assets.
+        # We manually copy them into the standalone directory for a complete deployment artifact.
+        - '[ -d public ] && cp -r public .next/standalone/public || true'
+        - cp -r .next/static .next/standalone/.next/static
+      deployFiles:
+        # The /~ syntax deploys the *contents* of the standalone directory directly to the runtime root
+        - .next/standalone/~
+    run:
+      base: nodejs@22
+      ports:
+        - port: 3000
+          httpSupport: true
+      envVariables:
+        NODE_ENV: production
+      # Run the standalone server.js explicitly bound to 0.0.0.0 for external access
+      start: HOSTNAME=0.0.0.0 PORT=3000 node server.js
