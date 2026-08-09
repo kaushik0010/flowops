@@ -1,7 +1,7 @@
 zerops:
   - setup: flowops
     build:
-      base: alpine/nodejs@22
+      base: nodejs@20
       buildCommands:
         - corepack enable
         - corepack prepare pnpm@11.0.9 --activate
@@ -13,7 +13,7 @@ zerops:
         - .next/standalone/~
 
     run:
-      base: alpine/nodejs@22
+      base: nodejs@20
       start: node server.js
       ports:
         - port: 3000
