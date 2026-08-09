@@ -179,13 +179,24 @@ export const zeropsExporter: InfrastructureExporter = {
       zeropsConfigArray.push(setupConfig);
     }
 
-    // 7. Process Connections for Informational Diagnostics
-    // We sort edges so diagnostic logs are also deterministic
+    // 7. Process Connections for Diagnostics & Robustness
     const sortedConnections = [...project.connections].sort((a, b) =>
       a.id.localeCompare(b.id)
     );
 
     for (const conn of sortedConnections) {
+      const sourceNode = project.nodes.find((n) => n.id === conn.sourceId);
+      const targetNode = project.nodes.find((n) => n.id === conn.targetId);
+
+      if (!sourceNode || !targetNode) {
+        diagnostics.push({
+          severity: "error",
+          message: `Connection references a missing source or target service.`,
+          connectionId: conn.id,
+        });
+        continue;
+      }
+
       if (conn.intent === "env_binding") {
         diagnostics.push({
           severity: "info",

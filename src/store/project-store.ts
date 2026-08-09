@@ -2,6 +2,10 @@
 
 import { create } from "zustand";
 import { FlowOpsProjectSchema } from "../engine/schema/project";
+import { 
+  loadProjectFromStorage, 
+  saveProjectToStorage 
+} from "../lib/project-persistence";
 import type {
   FlowOpsProject,
   ServiceNode,
@@ -10,20 +14,10 @@ import type {
   ConnectionIntent,
 } from "../types";
 
-// ---------------------------------------------------------
-// Helper: Default Configurations
-// ---------------------------------------------------------
-
-/**
- * Generates a clean, valid UUID. Supported in modern browsers and Node (Next.js SSR).
- */
 function generateId(): string {
   return crypto.randomUUID();
 }
 
-/**
- * Creates a valid, empty FlowOps project.
- */
 function createEmptyProject(): FlowOpsProject {
   return {
     id: generateId(),
@@ -35,8 +29,38 @@ function createEmptyProject(): FlowOpsProject {
 }
 
 /**
- * Provides sensible default configurations based on the service type.
+ * Bounded spawn offset pattern around a given center point to prevent infinite off-screen drift.
  */
+function getBoundedSpawnPosition(existingNodes: ServiceNode[], requestedCenter?: { x: number; y: number }): { x: number; y: number } {
+  const center = requestedCenter || { x: 250, y: 200 };
+  
+  const offsets = [
+    { x: 0, y: 0 },
+    { x: 80, y: 60 },
+    { x: -80, y: 60 },
+    { x: 80, y: -60 },
+    { x: -80, y: -60 },
+    { x: 160, y: 0 },
+    { x: -160, y: 0 },
+    { x: 0, y: 120 },
+    { x: 0, y: -120 },
+  ];
+
+  for (const offset of offsets) {
+    const candidate = { x: center.x + offset.x, y: center.y + offset.y };
+    const overlapping = existingNodes.some(
+      (node) => Math.abs(node.presentation.x - candidate.x) < 40 && Math.abs(node.presentation.y - candidate.y) < 40
+    );
+    if (!overlapping) {
+      return candidate;
+    }
+  }
+
+  const fallbackIndex = existingNodes.length % offsets.length;
+  const slot = offsets[fallbackIndex] || { x: 0, y: 0 };
+  return { x: center.x + slot.x, y: center.y + slot.y };
+}
+
 function createDefaultService(
   type: ServiceType,
   presentation: { x: number; y: number }
@@ -99,7 +123,7 @@ function createDefaultService(
         name: "background-worker",
         config: {
           runtime: "node",
-          ports: [], // Workers typically don't expose ports
+          ports: [],
           environmentVariables: [],
           startCommand: "npm start",
         },
@@ -114,7 +138,6 @@ function createDefaultService(
         },
       };
     default:
-      // Fallback that satisfies the schema
       return {
         ...baseNode,
         name: `service-${type}`,
@@ -126,130 +149,144 @@ function createDefaultService(
   }
 }
 
-// ---------------------------------------------------------
-// Store Definition
-// ---------------------------------------------------------
-
 export interface ProjectStoreState {
   project: FlowOpsProject;
 
-  // Project Actions
   renameProject: (name: string) => void;
   resetProject: () => void;
-  
-  /**
-   * Replaces the entire project with incoming data (e.g., from JSON import).
-   * Parses the input against the Zod schema. Returns a result object rather than throwing
-   * to allow the UI to easily handle the error state without Error Boundaries.
-   */
   replaceProject: (data: unknown) => { success: true } | { success: false; error: string };
+  loadProject: (project: FlowOpsProject) => void;
 
-  // Service Actions
-  addService: (type: ServiceType, presentation: { x: number; y: number }) => string;
+  addService: (type: ServiceType, presentation?: { x: number; y: number }) => string;
   removeService: (id: string) => void;
   updateService: (id: string, updates: Partial<Omit<ServiceNode, "id" | "type">>) => void;
 
-  // Connection Actions
   addConnection: (sourceId: string, targetId: string, intent: ConnectionIntent) => string;
   removeConnection: (id: string) => void;
   updateConnection: (id: string, updates: Partial<Pick<ServiceConnection, "intent">>) => void;
 }
 
-export const useProjectStore = create<ProjectStoreState>((set) => ({
-  project: createEmptyProject(),
+export const useProjectStore = create<ProjectStoreState>((set) => {
+  const initialProject = loadProjectFromStorage() || createEmptyProject();
 
-  renameProject: (name: string) =>
-    set((state) => ({
-      project: { ...state.project, name },
-    })),
+  return {
+    project: initialProject,
 
-  resetProject: () =>
-    set({
-      project: createEmptyProject(),
-    }),
+    renameProject: (name: string) =>
+      set((state) => {
+        const nextProject = { ...state.project, name };
+        saveProjectToStorage(nextProject);
+        return { project: nextProject };
+      }),
 
-  replaceProject: (data: unknown) => {
-    const parseResult = FlowOpsProjectSchema.safeParse(data);
-    if (!parseResult.success) {
-      return { success: false, error: parseResult.error.message };
-    }
-    set({ project: parseResult.data });
-    return { success: true };
-  },
+    resetProject: () => {
+      const nextProject = createEmptyProject();
+      saveProjectToStorage(nextProject);
+      set({ project: nextProject });
+    },
 
-  addService: (type, presentation) => {
-    const newNode = createDefaultService(type, presentation);
-    set((state) => ({
-      project: {
-        ...state.project,
-        nodes: [...state.project.nodes, newNode],
-      },
-    }));
-    return newNode.id;
-  },
+    replaceProject: (data: unknown) => {
+      const parseResult = FlowOpsProjectSchema.safeParse(data);
+      if (!parseResult.success) {
+        return { success: false, error: parseResult.error.message };
+      }
+      const nextProject = parseResult.data;
+      saveProjectToStorage(nextProject);
+      set({ project: nextProject });
+      return { success: true };
+    },
 
-  removeService: (id: string) =>
-    set((state) => {
-      // 1. Remove the node itself
-      const updatedNodes = state.project.nodes.filter((node) => node.id !== id);
-      
-      // 2. Cascade delete: Remove any connections where this node is source or target
-      const updatedConnections = state.project.connections.filter(
-        (conn) => conn.sourceId !== id && conn.targetId !== id
-      );
+    loadProject: (project: FlowOpsProject) => {
+      saveProjectToStorage(project);
+      set({ project });
+    },
 
-      return {
-        project: {
+    addService: (type, presentation) => {
+      let createdId = "";
+      set((state) => {
+        const pos = getBoundedSpawnPosition(state.project.nodes, presentation);
+        const newNode = createDefaultService(type, pos);
+        const nextProject = {
+          ...state.project,
+          nodes: [...state.project.nodes, newNode],
+        };
+        saveProjectToStorage(nextProject);
+        createdId = newNode.id;
+        return { project: nextProject };
+      });
+      return createdId;
+    },
+
+    removeService: (id: string) =>
+      set((state) => {
+        const updatedNodes = state.project.nodes.filter((node) => node.id !== id);
+        const updatedConnections = state.project.connections.filter(
+          (conn) => conn.sourceId !== id && conn.targetId !== id
+        );
+
+        const nextProject = {
           ...state.project,
           nodes: updatedNodes,
           connections: updatedConnections,
-        },
+        };
+        saveProjectToStorage(nextProject);
+        return { project: nextProject };
+      }),
+
+    updateService: (id, updates) =>
+      set((state) => {
+        const nextProject = {
+          ...state.project,
+          nodes: state.project.nodes.map((node) =>
+            node.id === id
+              ? { ...node, ...updates, config: { ...node.config, ...(updates.config || {}) } }
+              : node
+          ),
+        };
+        saveProjectToStorage(nextProject);
+        return { project: nextProject };
+      }),
+
+    addConnection: (sourceId, targetId, intent) => {
+      const newConnection: ServiceConnection = {
+        id: generateId(),
+        sourceId,
+        targetId,
+        intent,
       };
-    }),
+      let createdId = "";
+      set((state) => {
+        const nextProject = {
+          ...state.project,
+          connections: [...state.project.connections, newConnection],
+        };
+        saveProjectToStorage(nextProject);
+        createdId = newConnection.id;
+        return { project: nextProject };
+      });
+      return createdId;
+    },
 
-  updateService: (id, updates) =>
-    set((state) => ({
-      project: {
-        ...state.project,
-        nodes: state.project.nodes.map((node) =>
-          node.id === id
-            ? { ...node, ...updates, config: { ...node.config, ...(updates.config || {}) } }
-            : node
-        ),
-      },
-    })),
+    removeConnection: (id: string) =>
+      set((state) => {
+        const nextProject = {
+          ...state.project,
+          connections: state.project.connections.filter((conn) => conn.id !== id),
+        };
+        saveProjectToStorage(nextProject);
+        return { project: nextProject };
+      }),
 
-  addConnection: (sourceId, targetId, intent) => {
-    const newConnection: ServiceConnection = {
-      id: generateId(),
-      sourceId,
-      targetId,
-      intent,
-    };
-    set((state) => ({
-      project: {
-        ...state.project,
-        connections: [...state.project.connections, newConnection],
-      },
-    }));
-    return newConnection.id;
-  },
-
-  removeConnection: (id: string) =>
-    set((state) => ({
-      project: {
-        ...state.project,
-        connections: state.project.connections.filter((conn) => conn.id !== id),
-      },
-    })),
-
-  updateConnection: (id, updates) =>
-    set((state) => ({
-      project: {
-        ...state.project,
-        connections: state.project.connections.map((conn) =>
-          conn.id === id ? { ...conn, ...updates } : conn
-        ),
-      },
-    })),
-}));
+    updateConnection: (id, updates) =>
+      set((state) => {
+        const nextProject = {
+          ...state.project,
+          connections: state.project.connections.map((conn) =>
+            conn.id === id ? { ...conn, ...updates } : conn
+          ),
+        };
+        saveProjectToStorage(nextProject);
+        return { project: nextProject };
+      }),
+  };
+});

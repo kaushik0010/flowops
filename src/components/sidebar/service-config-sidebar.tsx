@@ -6,7 +6,7 @@ import { useState, useEffect, type ChangeEvent } from "react";
 import { Monitor, Server, Database, Layers, Cog, HardDrive, Plus, X, Lock, Unlock } from "lucide-react";
 import { ServiceConfigSection } from "./service-config-section";
 import { useProjectStore } from "../../store/project-store";
-import type { RuntimeType, ServiceNode, ServiceType, EnvironmentVariable } from "../../types";
+import type { RuntimeType, ServiceType, EnvironmentVariable } from "../../types";
 
 export interface ServiceConfigSidebarProps {
   selectedServiceId: string | null;
@@ -46,28 +46,76 @@ const RUNTIME_OPTIONS: { value: RuntimeType; label: string }[] = [
 const COMPUTE_SERVICES = new Set<ServiceType>(["frontend", "backend", "worker"]);
 
 // ---------------------------------------------------------
+// UI Layer: Individual Port Row
+// ---------------------------------------------------------
+// Manages local input state to prevent typing lag and allows editing existing ports inline.
+
+function PortRow({
+  port,
+  index,
+  onUpdate,
+  onRemove,
+}: {
+  port: number;
+  index: number;
+  onUpdate: (index: number, p: number) => void;
+  onRemove: (index: number) => void;
+}) {
+  const [localVal, setLocalVal] = useState(port.toString());
+
+  useEffect(() => {
+    setLocalVal(port.toString());
+  }, [port]);
+
+  const commitChanges = () => {
+    const p = parseInt(localVal, 10);
+    // Basic UI sanitization: ensure it's a valid integer in range
+    if (!isNaN(p) && p > 0 && p <= 65535) {
+      if (p !== port) onUpdate(index, p);
+    } else {
+      setLocalVal(port.toString()); // Revert if obviously invalid
+    }
+  };
+
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500">
+      <input
+        type="number"
+        value={localVal}
+        onChange={(e) => setLocalVal(e.target.value)}
+        onBlur={commitChanges}
+        onKeyDown={(e) => e.key === "Enter" && commitChanges()}
+        className="w-full min-w-0 bg-transparent text-sm font-mono text-slate-700 focus:outline-none"
+      />
+      <button
+        onClick={() => onRemove(index)}
+        className="flex shrink-0 items-center justify-center rounded p-1 text-slate-400 hover:bg-rose-100 hover:text-rose-600 transition-colors"
+        title="Remove port"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------
 // UI Layer: Individual Environment Variable Row
 // ---------------------------------------------------------
-// This component manages its own local input state to prevent typing lag
-// and focus loss, only committing to Zustand on blur or enter.
 
 function EnvVarRow({
   env,
   index,
   onUpdate,
   onRemove,
-  existingKeys,
 }: {
   env: EnvironmentVariable;
   index: number;
   onUpdate: (index: number, newEnv: EnvironmentVariable) => void;
   onRemove: (index: number) => void;
-  existingKeys: Set<string>;
 }) {
   const [localKey, setLocalKey] = useState(env.key);
   const [localValue, setLocalValue] = useState(env.value);
 
-  // Sync from domain model if canonical state changes externally
   useEffect(() => {
     setLocalKey(env.key);
     setLocalValue(env.value);
@@ -76,13 +124,13 @@ function EnvVarRow({
   const commitChanges = () => {
     const newKey = localKey.trim();
     if (!newKey) {
-      setLocalKey(env.key); // Revert to old key if empty
+      setLocalKey(env.key); // Prevent obviously invalid empty keys
       return;
     }
-    if (newKey !== env.key && existingKeys.has(newKey)) {
-      setLocalKey(env.key); // Revert to prevent duplicate key creation
-      return;
-    }
+    
+    // Note: We deliberately allow duplicate keys to persist here so the architectural 
+    // Validation Engine acts as the single source of truth for catching them later.
+    
     if (newKey === env.key && localValue === env.value) {
       return; // No changes to commit
     }
@@ -146,7 +194,6 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
 
   const [newPortInputValue, setNewPortInputValue] = useState("");
   
-  // Transient state for "Add Variable" form
   const [newEnvKey, setNewEnvKey] = useState("");
   const [newEnvValue, setNewEnvValue] = useState("");
   const [newEnvIsSecret, setNewEnvIsSecret] = useState(false);
@@ -194,7 +241,6 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
   const isCompute = COMPUTE_SERVICES.has(service.type);
   
   const currentEnvs = service.config.environmentVariables || [];
-  const existingEnvKeys = new Set(currentEnvs.map((e) => e.key));
 
   // ---------------------------------------------------------
   // Handlers: Canonical Zustand Mutations
@@ -231,6 +277,8 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
     const portNum = parseInt(newPortInputValue, 10);
     if (!isNaN(portNum) && portNum > 0 && portNum <= 65535) {
       const currentPorts = service.config.ports || [];
+      // Even though we allow env var duplicates, duplicate ports make no semantic 
+      // sense on a single container, so preventing UI duplication here is safe.
       if (!currentPorts.includes(portNum)) {
         updateService(service.id, {
           config: { ...service.config, ports: [...currentPorts, portNum] },
@@ -240,8 +288,16 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
     setNewPortInputValue(""); 
   };
 
-  const handleRemovePort = (portToRemove: number) => {
-    const updatedPorts = (service.config.ports || []).filter((p) => p !== portToRemove);
+  const handleUpdatePort = (index: number, newPort: number) => {
+    const updatedPorts = [...(service.config.ports || [])];
+    updatedPorts[index] = newPort;
+    updateService(service.id, {
+      config: { ...service.config, ports: updatedPorts },
+    });
+  };
+
+  const handleRemovePort = (index: number) => {
+    const updatedPorts = (service.config.ports || []).filter((_, i) => i !== index);
     updateService(service.id, {
       config: { ...service.config, ports: updatedPorts },
     });
@@ -249,8 +305,9 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
 
   const handleAddEnv = () => {
     const key = newEnvKey.trim();
-    if (!key || existingEnvKeys.has(key)) return;
+    if (!key) return; // Prevent empty key
 
+    // Duplicate keys intentionally allowed here. Validation Engine catches them.
     updateService(service.id, {
       config: {
         ...service.config,
@@ -297,7 +354,7 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
 
       <div className="flex-1 overflow-y-auto p-4 divide-y divide-slate-100">
         
-        <ServiceConfigSection title="General">
+        <ServiceConfigSection title="Identity">
           <div className="flex flex-col gap-1.5">
             <label htmlFor="serviceName" className="text-xs font-medium text-slate-600">
               Service Name
@@ -334,7 +391,7 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
                 ))}
               </select>
             </div>
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 mt-2">
               <label htmlFor="buildCommand" className="text-xs font-medium text-slate-600">
                 Build Command <span className="text-slate-400 font-normal">(Optional)</span>
               </label>
@@ -348,7 +405,7 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
                 placeholder="e.g., pnpm build"
               />
             </div>
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 mt-2">
               <label htmlFor="startCommand" className="text-xs font-medium text-slate-600">
                 Start Command <span className="text-slate-400 font-normal">(Optional)</span>
               </label>
@@ -368,17 +425,14 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
         {service.type !== "storage" && (
           <ServiceConfigSection title="Ports">
             <div className="flex flex-col gap-2">
-              {service.config.ports.map((port) => (
-                <div key={port} className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5">
-                  <span className="font-mono text-sm text-slate-700">{port}</span>
-                  <button
-                    onClick={() => handleRemovePort(port)}
-                    className="text-slate-400 hover:text-rose-500 transition-colors"
-                    aria-label={`Remove port ${port}`}
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
+              {service.config.ports.map((port, index) => (
+                <PortRow
+                  key={`port-${index}-${service.id}`}
+                  index={index}
+                  port={port}
+                  onUpdate={handleUpdatePort}
+                  onRemove={handleRemovePort}
+                />
               ))}
               <div className="mt-1 flex items-center gap-2">
                 <input
@@ -404,19 +458,15 @@ export function ServiceConfigSidebar({ selectedServiceId }: ServiceConfigSidebar
           </ServiceConfigSection>
         )}
 
-        <ServiceConfigSection 
-          title="Environment Variables" 
-          description="Application settings and secrets."
-        >
+        <ServiceConfigSection title="Environment Variables">
           <div className="flex flex-col gap-2">
             {currentEnvs.map((env, index) => (
               <EnvVarRow
-                key={`env-${index}`}
+                key={`env-${index}-${service.id}`}
                 index={index}
                 env={env}
                 onUpdate={handleUpdateEnv}
                 onRemove={handleRemoveEnv}
-                existingKeys={existingEnvKeys}
               />
             ))}
             

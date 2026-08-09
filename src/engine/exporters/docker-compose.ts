@@ -1,7 +1,7 @@
 // src/engine/exporters/docker-compose.ts
 
 import { stringify } from "yaml";
-import type { FlowOpsProject, ServiceNode } from "../../types";
+import type { FlowOpsProject } from "../../types";
 import type {
   InfrastructureExporter,
   ExportResult,
@@ -88,14 +88,16 @@ export const dockerComposeExporter: InfrastructureExporter = {
         serviceDef.image = "redis:7-alpine";
       } else {
         // Compute Services (frontend, backend, worker)
-        // Since we lack Dockerfile paths in the domain, we assume a standard monorepo folder structure
         serviceDef.build = `./${composeName}`;
-        
-        diagnostics.push({
-          severity: "info",
-          message: `Service '${node.name}' uses runtime '${node.config.runtime}'. Compose expects a Dockerfile in './${composeName}'.`,
-          nodeId: node.id,
-        });
+
+        // Validate runtime presence for compute services
+        if (!node.config.runtime) {
+          diagnostics.push({
+            severity: "error",
+            message: `Service '${node.name}' is missing a runtime. Docker Compose configuration for this service may be incomplete.`,
+            nodeId: node.id,
+          });
+        }
 
         if (node.config.buildCommand) {
           diagnostics.push({
@@ -116,8 +118,10 @@ export const dockerComposeExporter: InfrastructureExporter = {
         const hostPorts: string[] = [];
         const internalPorts: string[] = [];
 
-        for (const port of node.config.ports) {
-          // Expose frontend/backend to host for local dev, keep workers/dbs internal
+        // Sort ports numerically to maintain complete determinism
+        const sortedPorts = [...node.config.ports].sort((a, b) => a - b);
+
+        for (const port of sortedPorts) {
           if (node.type === "frontend" || node.type === "backend") {
             hostPorts.push(`${port}:${port}`);
           } else {
@@ -139,7 +143,6 @@ export const dockerComposeExporter: InfrastructureExporter = {
 
         for (const env of sortedEnvs) {
           if (env.isSecret) {
-            // Idiomatic Compose secret passing: rely on host's .env file
             serviceDef.environment[env.key] = `\${${env.key}}`;
             diagnostics.push({
               severity: "warning",
@@ -155,31 +158,41 @@ export const dockerComposeExporter: InfrastructureExporter = {
       services[composeName] = serviceDef;
     }
 
-    // 2. Process Connections
+    // 2. Process Connections with robust dangling checks
     const sortedConnections = [...project.connections].sort((a, b) =>
       a.id.localeCompare(b.id)
     );
 
     for (const conn of sortedConnections) {
+      const sourceNode = project.nodes.find((n) => n.id === conn.sourceId);
+      const targetNode = project.nodes.find((n) => n.id === conn.targetId);
+
+      if (!sourceNode || !targetNode) {
+        diagnostics.push({
+          severity: "error",
+          message: `Connection references a missing source or target service.`,
+          connectionId: conn.id,
+        });
+        continue;
+      }
+
       const sourceName = serviceNameMap.get(conn.sourceId);
       const targetName = serviceNameMap.get(conn.targetId);
 
-      // Skip if omitted from maps (e.g., storage)
-      if (!sourceName || !targetName) continue; 
+      // Skip if omitted (e.g. storage)
+      if (!sourceName || !targetName) continue;
       
       const sourceService = services[sourceName];
-      
-      // FIX: Explicitly check that the service exists in the Record 
-      // before mutating it, satisfying noUncheckedIndexedAccess.
-      if (!sourceService) continue; 
+      if (!sourceService) continue;
 
       if (conn.intent === "depends_on") {
         if (!sourceService.depends_on) {
           sourceService.depends_on = [];
         }
-        // Prevent duplicates
         if (!sourceService.depends_on.includes(targetName)) {
           sourceService.depends_on.push(targetName);
+          // Ensure depends_on array remains deterministically sorted
+          sourceService.depends_on.sort();
         }
       } else if (conn.intent === "network") {
         diagnostics.push({

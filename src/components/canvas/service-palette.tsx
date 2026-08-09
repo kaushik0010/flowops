@@ -2,116 +2,114 @@
 
 "use client";
 
-import { useCallback } from "react";
-import { Monitor, Server, Database, Layers, Cog, HardDrive } from "lucide-react";
-import { ServicePaletteItem } from "./service-palette-item";
-import { useProjectStore } from "../../store/project-store";
+import { Monitor, Server, Database, Layers, Cog, HardDrive, Plus, type LucideIcon } from "lucide-react";
 import type { ServiceType } from "../../types";
 
-// ---------------------------------------------------------
-// Configuration: Service Palette Definitions
-// ---------------------------------------------------------
-// We maintain consistent visual themes with the FlowOpsServiceNode
-// while adding descriptive text for the palette UI.
+interface PaletteItemDefinition {
+  type: ServiceType;
+  title: string;
+  subtitle: string;
+  icon: LucideIcon;
+  badgeColor: string;
+  badgeBg: string;
+}
 
-const SERVICE_CATALOG = [
+const PALETTE_ITEMS: PaletteItemDefinition[] = [
   {
-    type: "frontend" as ServiceType,
-    name: "Frontend",
-    description: "Public web application (e.g., React, Next.js, Static)",
+    type: "frontend",
+    title: "Frontend Service",
+    subtitle: "Web UI / Client Application",
     icon: Monitor,
-    themeColorClass: "text-blue-600",
-    themeBgClass: "bg-blue-50",
+    badgeColor: "text-blue-600",
+    badgeBg: "bg-blue-50 border-blue-100",
   },
   {
-    type: "backend" as ServiceType,
-    name: "Backend",
-    description: "API server or application backend",
+    type: "backend",
+    title: "Backend API",
+    subtitle: "REST / GraphQL Server",
     icon: Server,
-    themeColorClass: "text-emerald-600",
-    themeBgClass: "bg-emerald-50",
+    badgeColor: "text-emerald-600",
+    badgeBg: "bg-emerald-50 border-emerald-100",
   },
   {
-    type: "postgres" as ServiceType,
-    name: "PostgreSQL",
-    description: "Managed relational database instance",
+    type: "postgres",
+    title: "PostgreSQL",
+    subtitle: "Relational Database",
     icon: Database,
-    themeColorClass: "text-indigo-600",
-    themeBgClass: "bg-indigo-50",
+    badgeColor: "text-indigo-600",
+    badgeBg: "bg-indigo-50 border-indigo-100",
   },
   {
-    type: "redis" as ServiceType,
-    name: "Redis",
-    description: "In-memory cache and message broker",
+    type: "redis",
+    title: "Redis Cache",
+    subtitle: "In-Memory Data Store",
     icon: Layers,
-    themeColorClass: "text-red-600",
-    themeBgClass: "bg-red-50",
+    badgeColor: "text-red-600",
+    badgeBg: "bg-red-50 border-red-100",
   },
   {
-    type: "worker" as ServiceType,
-    name: "Worker",
-    description: "Background processing and async queues",
+    type: "worker",
+    title: "Background Worker",
+    subtitle: "Async Task Processor",
     icon: Cog,
-    themeColorClass: "text-amber-600",
-    themeBgClass: "bg-amber-50",
+    badgeColor: "text-amber-600",
+    badgeBg: "bg-amber-50 border-amber-100",
   },
   {
-    type: "storage" as ServiceType,
-    name: "Storage",
-    description: "Object storage bucket for persistent assets",
+    type: "storage",
+    title: "Object Storage",
+    subtitle: "File & Asset Bucket",
     icon: HardDrive,
-    themeColorClass: "text-slate-600",
-    themeBgClass: "bg-slate-50",
+    badgeColor: "text-slate-600",
+    badgeBg: "bg-slate-50 border-slate-200",
   },
 ];
 
-// ---------------------------------------------------------
-// Component: Service Palette
-// ---------------------------------------------------------
+export interface ServicePaletteProps {
+  onAddService: (type: ServiceType) => void;
+}
 
-export function ServicePalette() {
-  // Subscribe only to the length of the nodes array to calculate placement offsets.
-  // We do not subscribe to the entire project object to prevent deep re-renders on node dragging.
-  const nodeCount = useProjectStore((state) => state.project.nodes.length);
-  const addService = useProjectStore((state) => state.addService);
-
-  const handleSelectService = useCallback(
-    (type: string) => {
-      // Deterministic placement algorithm to prevent nodes spawning exactly on top of each other.
-      // Places them in a rough grid layout, shifting down every 4 nodes.
-      const xOffset = 50 + (nodeCount % 4) * 240;
-      const yOffset = 50 + Math.floor(nodeCount / 4) * 160;
-
-      // Dispatch to canonical store. The store owns the ID generation and default config.
-      addService(type as ServiceType, { x: xOffset, y: yOffset });
-    },
-    [addService, nodeCount]
-  );
-
+export function ServicePalette({ onAddService }: ServicePaletteProps) {
   return (
-    <div className="flex h-full w-full flex-col overflow-y-auto bg-slate-50/80 p-4 backdrop-blur-md border-r border-slate-200">
-      <div className="mb-4">
-        <h2 className="text-sm font-bold uppercase tracking-wider text-slate-700">
-          Add Service
+    <div className="flex h-full flex-col bg-white">
+      <div className="border-b border-slate-100 px-4 py-3">
+        <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+          Services
         </h2>
-        <p className="mt-1 text-xs text-slate-500">
-          Select a component to add it to your architecture canvas.
+        <p className="mt-0.5 text-xs text-slate-500">
+          Click any component to add it to your architecture.
         </p>
       </div>
 
-      <div className="flex flex-col gap-3">
-        {SERVICE_CATALOG.map((service) => (
-          <ServicePaletteItem
-            key={service.type}
-            type={service.type}
-            name={service.name}
-            description={service.description}
-            icon={service.icon}
-            themeColorClass={service.themeColorClass}
-            themeBgClass={service.themeBgClass}
-            onSelect={handleSelectService}
-          />
-        ))}
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {PALETTE_ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.type}
+              onClick={() => onAddService(item.type)}
+              className="group relative flex w-full items-center justify-between rounded-lg border border-slate-200 bg-white p-3 text-left shadow-sm transition-all hover:border-blue-400 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${item.badgeBg}`}>
+                  <Icon className={`h-4 w-4 ${item.badgeColor}`} />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="truncate text-xs font-bold text-slate-800 group-hover:text-blue-600 transition-colors">
+                    {item.title}
+                  </span>
+                  <span className="truncate text-[11px] font-medium text-slate-500">
+                    {item.subtitle}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-50 text-slate-400 group-hover:bg-blue-50 group-hover:text-blue-600 transition-colors">
+                <Plus className="h-4 w-4" />
+              </div>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
