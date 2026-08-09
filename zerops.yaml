@@ -1,5 +1,4 @@
 zerops:
-  # NOTE: The setup name must match the service name created in the Zerops GUI.
   - setup: flowops
     build:
       base: nodejs@22
